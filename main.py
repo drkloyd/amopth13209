@@ -2,27 +2,44 @@ import os
 import requests
 import time
 import socket
+import threading
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+from flask import Flask
+
+import random
 
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 AMAZON_URLS = os.getenv("AMAZON_URLS", "")
-CHECK_INTERVAL = 10
+CHECK_INTERVAL = 60  # saniye, Render için biraz uzun tutmak iyi
 SENT_PRODUCTS = {}
 
 url_list = [url.strip() for url in AMAZON_URLS.split(",") if url.strip()]
 
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:115.0) Gecko/20100101 Firefox/115.0",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Linux; Android 13; SM-A715F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36"
+]
+
 def resolve_amazon_ip():
-    ip = socket.gethostbyname("www.amazon.com.tr")
-    print(f"Amazon IP: {ip}")
-    return ip
+    try:
+        ip = socket.gethostbyname("www.amazon.com.tr")
+        print(f"Amazon IP: {ip}")
+        return ip
+    except Exception as e:
+        print(f"IP çözümleme hatası: {e}")
+        return None
 
 def get_headers():
     return {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0 Safari/537.36",
+        "User-Agent": random.choice(USER_AGENTS),
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
         "Connection": "close",
@@ -34,6 +51,9 @@ def fetch_products(url):
     try:
         resolve_amazon_ip()
         response = requests.get(url, headers=get_headers(), timeout=15)
+        if response.status_code != 200:
+            print(f"[HATA] HTTP {response.status_code} ile cevap alındı ({url})")
+            return []
         soup = BeautifulSoup(response.text, "html.parser")
         products = soup.select(".s-main-slot > div[data-index]:nth-of-type(-n+9)")
 
@@ -77,7 +97,7 @@ def send_telegram_message(product):
 def monitor():
     global SENT_PRODUCTS
     print("🔍 İzleme başladı.")
-    
+
     for url in url_list:
         SENT_PRODUCTS[url] = set()
         products = fetch_products(url)
@@ -99,5 +119,17 @@ def monitor():
             print(f"[Loop Hatası]: {e}")
             time.sleep(60)
 
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Amazon ürün izleyici bot çalışıyor."
+
 if __name__ == "__main__":
-    monitor()
+    # monitor fonksiyonunu ayrı bir threadde başlat
+    t = threading.Thread(target=monitor, daemon=True)
+    t.start()
+
+    # Flask web server başlasın (Render için port otomatik atanacak)
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
