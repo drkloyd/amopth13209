@@ -1,1 +1,13 @@
-startCommand: python main.py
+services:
+  - type: web
+    name: amazon-scraper-bot
+    runtime: python
+    buildCommand: ""
+    startCommand: "python main.py"
+    envVars:
+      - key: BOT_TOKEN
+        fromEnvVar: BOT_TOKEN
+      - key: CHAT_ID
+        fromEnvVar: CHAT_ID
+      - key: AMAZON_URLS
+        fromEnvVar: AMAZON_URLS
