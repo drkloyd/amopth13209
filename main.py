@@ -1,135 +1,115 @@
 import os
 import requests
 import time
-import socket
-import threading
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from flask import Flask
-
-import random
 
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 AMAZON_URLS = os.getenv("AMAZON_URLS", "")
-CHECK_INTERVAL = 60  # saniye, Render için biraz uzun tutmak iyi
-SENT_PRODUCTS = {}
+CHECK_INTERVAL = 5
+ASIN_FILE = "sent_asins.txt"
+
+# Kayıtlı ASIN'leri yükle
+SENT_ASINS = set()
+if os.path.exists(ASIN_FILE):
+    with open(ASIN_FILE, "r") as f:
+        SENT_ASINS = set(line.strip() for line in f)
 
 url_list = [url.strip() for url in AMAZON_URLS.split(",") if url.strip()]
 
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Safari/605.1.15",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:115.0) Gecko/20100101 Firefox/115.0",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
-    "Mozilla/5.0 (Linux; Android 13; SM-A715F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36"
-]
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0 Safari/537.36",
+    "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.8"
+}
 
-def resolve_amazon_ip():
-    try:
-        ip = socket.gethostbyname("www.amazon.com.tr")
-        print(f"Amazon IP: {ip}")
-        return ip
-    except Exception as e:
-        print(f"IP çözümleme hatası: {e}")
-        return None
-
-def get_headers():
-    return {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-        "Connection": "close",
-        "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.8",
-        "Host": "www.amazon.com.tr"
-    }
+def extract_asin_from_url(url):
+    if "/dp/" in url:
+        return url.split("/dp/")[1].split("/")[0].split("?")[0]
+    elif "/gp/product/" in url:
+        return url.split("/gp/product/")[1].split("/")[0].split("?")[0]
+    return None
 
 def fetch_products(url):
     try:
-        resolve_amazon_ip()
-        response = requests.get(url, headers=get_headers(), timeout=15)
-        if response.status_code != 200:
-            print(f"[HATA] HTTP {response.status_code} ile cevap alındı ({url})")
-            return []
+        response = requests.get(url, headers=HEADERS, timeout=10)
         soup = BeautifulSoup(response.text, "html.parser")
-        products = soup.select(".s-main-slot > div[data-index]:nth-of-type(-n+9)")
+        items = soup.select("div[data-asin][data-index]:nth-of-type(-n+10)")
 
-        result = []
-        for product in products:
-            title_tag = product.select_one("h2 span")
-            link_tag = product.select_one("a.a-link-normal")
-            img_tag = product.select_one("img.s-image")
+        new_products = []
+        for item in items:
+            asin = item.get("data-asin", "").strip()
+            if not asin or asin in SENT_ASINS:
+                continue
 
-            if title_tag and link_tag and img_tag:
-                title = title_tag.get_text(strip=True)
-                link = "https://www.amazon.com.tr" + link_tag.get("href")
-                img = img_tag.get("src")
-                result.append({
-                    "title": title,
-                    "link": link,
-                    "img": img
-                })
-        return result
+            link_tag = item.select_one("a.a-link-normal[href*='/dp/']")
+            title_tag = item.select_one("h2 span")
+            img_tag = item.select_one("img.s-image")
+            price_tag = item.select_one("span.a-price-whole")
+
+            if not (link_tag and title_tag and img_tag):
+                continue
+
+            title = title_tag.text.strip()
+            link = "https://www.amazon.com.tr" + link_tag["href"].split("?")[0]
+            img = img_tag["src"]
+            price = price_tag.text.strip() if price_tag else "Fiyat yok"
+            try:
+                price_float = float(price.replace(".", "").replace(",", "."))
+                price = f"{int(price_float)} TL"
+            except:
+                price = price + " TL"
+
+            new_products.append({
+                "asin": asin,
+                "title": title,
+                "link": link,
+                "img": img,
+                "price": price
+            })
+        return new_products
 
     except Exception as e:
-        print(f"[HATA] Ürün alınamadı ({url}): {e}")
+        print(f"[HATA] Ürün alınamadı: {e}")
         return []
 
-def send_telegram_message(product):
+def send_telegram(product):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-        caption = f"🆕 <b>{product['title']}</b>\n\n<a href='{product['link']}'>Ürün Linki</a>"
+        caption = (
+            f"🆕 <b>{product['title']}</b>\n"
+            f"💰 <b>Fiyat:</b> {product['price']}\n"
+            f"\n🔗 <a href='{product['link']}'>Ürüne Git</a>"
+        )
         data = {
             "chat_id": CHAT_ID,
-            "photo": product['img'],
+            "photo": product["img"],
             "caption": caption,
             "parse_mode": "HTML"
         }
-        resp = requests.post(url, data=data, timeout=10)
-        if resp.status_code != 200:
-            print(f"[Telegram Hatası] Status code: {resp.status_code}, Response: {resp.text}")
+        response = requests.post(url, data=data, timeout=10)
+        if response.status_code != 200:
+            print(f"[Telegram Hatası] {response.text}")
     except Exception as e:
         print(f"[Telegram Hatası] {e}")
 
+def save_asin(asin):
+    SENT_ASINS.add(asin)
+    with open(ASIN_FILE, "a") as f:
+        f.write(f"{asin}\n")
+
 def monitor():
-    global SENT_PRODUCTS
-    print("🔍 İzleme başladı.")
-
-    for url in url_list:
-        SENT_PRODUCTS[url] = set()
-        products = fetch_products(url)
-        for p in products:
-            send_telegram_message(p)
-            SENT_PRODUCTS[url].add(p['title'])
-
+    print("🚀 Ürün izleme başladı...")
     while True:
-        try:
-            for url in url_list:
-                current_products = fetch_products(url)
-                for product in current_products:
-                    if product['title'] not in SENT_PRODUCTS[url]:
-                        print(f"🆕 Yeni ürün bulundu ({url}): {product['title']}")
-                        send_telegram_message(product)
-                        SENT_PRODUCTS[url].add(product['title'])
-            time.sleep(CHECK_INTERVAL)
-        except Exception as e:
-            print(f"[Loop Hatası]: {e}")
-            time.sleep(60)
-
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-    return "Amazon ürün izleyici bot çalışıyor."
+        for url in url_list:
+            products = fetch_products(url)
+            for product in products:
+                print(f"🆕 Yeni ürün bulundu: {product['title']}")
+                send_telegram(product)
+                save_asin(product["asin"])
+        time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
-    # monitor fonksiyonunu ayrı bir threadde başlat
-    t = threading.Thread(target=monitor, daemon=True)
-    t.start()
-
-    # Flask web server başlasın (Render için port otomatik atanacak)
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    monitor()
