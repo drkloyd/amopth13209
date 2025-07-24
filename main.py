@@ -97,7 +97,7 @@ def monitor():
             time.sleep(CHECK_INTERVAL)
         except Exception as e:
             print(f"[Loop Hatası]: {e}")
-            time.sleep(60)
+            time.sleep(20)
 
 if __name__ == "__main__":
     monitor()
