@@ -1,39 +1,38 @@
 import os
-import requests
 import time
-import socket
+import cloudscraper
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+import requests
 
+# Yükle .env dosyasını
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 AMAZON_URLS = os.getenv("AMAZON_URLS", "")
-CHECK_INTERVAL = 10
+CHECK_INTERVAL = 15  # saniye
 SENT_PRODUCTS = {}
 
 url_list = [url.strip() for url in AMAZON_URLS.split(",") if url.strip()]
-
-def resolve_amazon_ip():
-    ip = socket.gethostbyname("www.amazon.com.tr")
-    print(f"Amazon IP: {ip}")
-    return ip
+scraper = cloudscraper.create_scraper()
 
 def get_headers():
     return {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0 Safari/537.36",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-        "Connection": "close",
-        "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.8",
-        "Host": "www.amazon.com.tr"
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:117.0) "
+            "Gecko/20100101 Firefox/117.0"
+        ),
+        "Accept-Language": "tr,en-US;q=0.7,en;q=0.3",
     }
 
 def fetch_products(url):
     try:
-        resolve_amazon_ip()
-        response = requests.get(url, headers=get_headers(), timeout=15)
+        response = scraper.get(url, headers=get_headers(), timeout=15)
+        if response.status_code != 200:
+            print(f"[HATA] Amazon HTTP durumu: {response.status_code}")
+            return []
+        
         soup = BeautifulSoup(response.text, "html.parser")
         products = soup.select(".s-main-slot > div[data-index]:nth-of-type(-n+9)")
 
@@ -68,16 +67,16 @@ def send_telegram_message(product):
             "caption": caption,
             "parse_mode": "HTML"
         }
-        resp = requests.post(url, data=data, timeout=10)
-        if resp.status_code != 200:
-            print(f"[Telegram Hatası] Status code: {resp.status_code}, Response: {resp.text}")
+        response = requests.post(url, data=data, timeout=10)
+        if response.status_code != 200:
+            print(f"[Telegram Hatası] Status code: {response.status_code}, Yanıt: {response.text}")
     except Exception as e:
         print(f"[Telegram Hatası] {e}")
 
 def monitor():
     global SENT_PRODUCTS
     print("🔍 İzleme başladı.")
-    
+
     for url in url_list:
         SENT_PRODUCTS[url] = set()
         products = fetch_products(url)
@@ -91,7 +90,7 @@ def monitor():
                 current_products = fetch_products(url)
                 for product in current_products:
                     if product['title'] not in SENT_PRODUCTS[url]:
-                        print(f"🆕 Yeni ürün bulundu ({url}): {product['title']}")
+                        print(f"🆕 Yeni ürün bulundu: {product['title']}")
                         send_telegram_message(product)
                         SENT_PRODUCTS[url].add(product['title'])
             time.sleep(CHECK_INTERVAL)
